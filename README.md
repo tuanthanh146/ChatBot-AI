@@ -73,6 +73,42 @@ npm run dev
 
 The application will be available at `http://localhost:3000`
 
+**Note**: By default, Next.js runs on port 3000. To change the port:
+
+**Option 1: Using environment variable**
+```bash
+# Windows PowerShell
+$env:PORT=3001; npm run dev
+
+# Windows CMD
+set PORT=3001 && npm run dev
+
+# Linux/Mac
+PORT=3001 npm run dev
+```
+
+**Option 2: Using command line flag**
+```bash
+# Development
+npx next dev -p 3001
+
+# Production
+npx next start -p 3001
+```
+
+**Option 3: Create `.env.local` file**
+```env
+PORT=3001
+```
+
+**Backend API Routes:**
+- All API routes (backend) run on the same port as the frontend
+- API endpoints:
+  - `POST /api/chat` - Chat streaming endpoint
+  - `GET /api/system` - System metrics
+  - `GET /api/metrics` - Performance metrics
+  - `GET /api/test-ollama` - Test Ollama connection
+
 ## Project Structure
 
 ```

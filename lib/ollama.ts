@@ -2,6 +2,10 @@ import type { ChatMessage } from './metrics'
 import * as process from 'node:process'
 import * as os from 'node:os'
 
+// OLLAMA_BASE_URL: URL của Ollama server
+// Khi deploy lên Vercel và dùng Cloudflare tunnel, set biến này trên Vercel
+// Ví dụ: OLLAMA_BASE_URL=https://xxx.trycloudflare.com (không có /api/chat ở cuối)
+// Cloudflare tunnel sẽ expose localhost:11434, nên URL sẽ là: https://xxx.trycloudflare.com
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434'
 const DEFAULT_MODEL = 'gpt-oss:120b-cloud'
 
@@ -26,12 +30,21 @@ export interface OllamaChatResponse {
 
 export async function checkOllamaConnection(): Promise<boolean> {
   try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10s timeout cho Cloudflare tunnel
+    
     const response = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
       method: 'GET',
-      signal: AbortSignal.timeout(5000),
+      signal: controller.signal,
+      headers: {
+        'Accept': 'application/json',
+      },
     })
+    
+    clearTimeout(timeoutId)
     return response.ok
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Ollama connection check failed:', error.message)
     return false
   }
 }
@@ -45,10 +58,15 @@ export async function streamChat(
   let fullResponse = ''
 
   try {
+    // Tăng timeout cho Cloudflare tunnel (có thể chậm hơn localhost)
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 300000) // 5 phút timeout
+    
     const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
       },
       body: JSON.stringify({
         model,
@@ -58,11 +76,20 @@ export async function streamChat(
         })),
         stream: true,
       }),
+      signal: controller.signal,
     })
+    
+    clearTimeout(timeoutId)
 
     if (!response.ok) {
       const errorText = await response.text()
       console.error('Ollama API error:', response.status, response.statusText, errorText)
+      
+      // Thông báo lỗi rõ ràng hơn cho Cloudflare tunnel
+      if (response.status === 404 || response.status === 502 || response.status === 503) {
+        throw new Error(`Không thể kết nối đến Ollama server. Kiểm tra Cloudflare tunnel và đảm bảo Ollama đang chạy. (${response.status}: ${response.statusText})`)
+      }
+      
       throw new Error(`Ollama API error: ${response.statusText} - ${errorText}`)
     }
 
@@ -151,8 +178,24 @@ export async function streamChat(
 
     const duration = Date.now() - startTime
     return { fullResponse, duration }
-  } catch (error) {
+  } catch (error: any) {
     const duration = Date.now() - startTime
+    
+    // Xử lý lỗi timeout hoặc network
+    if (error.name === 'AbortError' || error.message?.includes('timeout')) {
+      throw new Error(`Kết nối timeout. Kiểm tra Cloudflare tunnel và đảm bảo Ollama server đang chạy. (${error.message || 'Request timeout'})`)
+    }
+    
+    // Xử lý lỗi network
+    if (error.message?.includes('fetch') || error.message?.includes('network') || error.code === 'ECONNREFUSED') {
+      throw new Error(`Không thể kết nối đến Ollama server qua Cloudflare tunnel. Kiểm tra URL: ${OLLAMA_BASE_URL}`)
+    }
+    
+    // Nếu đã có error message, throw nó
+    if (error.message) {
+      throw error
+    }
+    
     throw { error, duration, fullResponse }
   }
 }

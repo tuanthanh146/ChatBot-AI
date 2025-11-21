@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { streamChat } from '@/lib/ollama'
 import { metricsCollector } from '@/lib/metrics'
 import type { ChatMessage } from '@/lib/metrics'
@@ -6,71 +6,106 @@ import type { ChatMessage } from '@/lib/metrics'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-export async function POST(req: NextRequest) {
-  try {
-    const { messages, model = 'gpt-oss:120b-cloud' } = await req.json()
+// ✅ FIX 405: Vercel dùng GET để kiểm tra API route
+export function GET() {
+  console.log('[GET /api/chat] Health check')
+  return NextResponse.json(
+    { 
+      status: 'ok', 
+      message: 'Chat API is running',
+      methods: ['GET', 'POST', 'OPTIONS']
+    },
+    { 
+      status: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+      }
+    }
+  )
+}
 
-    if (!messages || !Array.isArray(messages)) {
-      return new Response(JSON.stringify({ error: 'Invalid messages' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      })
+// ✅ FIX 405: CORS preflight
+export function OPTIONS() {
+  console.log('[OPTIONS /api/chat] CORS preflight')
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '86400',
+    },
+  })
+}
+
+export async function POST(req: NextRequest) {
+  // Log để debug trên Vercel
+  console.log('[POST /api/chat] Request received')
+  console.log('[POST /api/chat] Method:', req.method)
+  console.log('[POST /api/chat] URL:', req.url)
+  
+  try {
+    // Parse request body với error handling tốt hơn
+    let body
+    try {
+      body = await req.json()
+    } catch (parseError) {
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        {
+          status: 400,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+          },
+        }
+      )
     }
 
-    // Start metrics collection
+    const { messages, model = 'gpt-oss:120b-cloud' } = body
+
+    if (!messages || !Array.isArray(messages)) {
+      return NextResponse.json(
+        { error: 'Invalid messages: messages must be an array' },
+        {
+          status: 400,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+          },
+        }
+      )
+    }
+
     const requestId = metricsCollector.startRequest(messages, model)
     const streamStartTime = Date.now()
 
-    // Create a readable stream
     const encoder = new TextEncoder()
     const stream = new ReadableStream({
       async start(controller) {
         try {
           let fullResponse = ''
-          let firstChunk = true
           let chunkCount = 0
 
-          console.log(`[Chat API] Starting stream for model: ${model}, messages: ${messages.length}`)
-          
-          // Send start event immediately
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'start', requestId })}\n\n`))
-          
-          await streamChat(
-            messages as ChatMessage[],
-            model,
-            (chunk) => {
-              if (chunk) {
-                chunkCount++
-                fullResponse += chunk
-                console.log(`[Chat API] Chunk ${chunkCount} received, length: ${chunk.length}, total: ${fullResponse.length}`)
-                
-                // Send chunk to client
-                try {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`))
-                } catch (e) {
-                  console.error('[Chat API] Failed to enqueue chunk:', e)
-                }
-              }
-            }
-          )
-          
-          console.log(`[Chat API] Stream completed. Chunks: ${chunkCount}, Response length: ${fullResponse.length}`)
-          
-          // If no response was received, send an error
-          if (!fullResponse) {
-            console.error('[Chat API] No response received from Ollama')
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ type: 'error', error: 'No response received from Ollama. Please check if the model exists and Ollama is running.' })}\n\n`
-              )
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ type: 'start', requestId })}\n\n`
             )
-            controller.close()
-            return
-          }
+          )
+
+          await streamChat(messages as ChatMessage[], model, (chunk) => {
+            if (chunk) {
+              chunkCount++
+              fullResponse += chunk
+
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`
+                )
+              )
+            }
+          })
 
           const streamingDuration = Date.now() - streamStartTime
 
-          // End metrics collection
           await metricsCollector.endRequest(
             requestId,
             fullResponse,
@@ -78,24 +113,26 @@ export async function POST(req: NextRequest) {
             'success'
           )
 
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', requestId })}\n\n`))
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ type: 'done', requestId })}\n\n`
+            )
+          )
           controller.close()
         } catch (error: any) {
-          console.error('[Chat API] Stream error:', error)
           const streamingDuration = Date.now() - streamStartTime
-          const errorMessage = error.error?.message || error.message || 'Unknown error'
-          
+
           await metricsCollector.endRequest(
             requestId,
-            error.fullResponse || '',
+            '',
             streamingDuration,
             'error',
-            errorMessage
+            error.message
           )
 
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ type: 'error', error: errorMessage })}\n\n`
+              `data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`
             )
           )
           controller.close()
@@ -108,13 +145,24 @@ export async function POST(req: NextRequest) {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
       },
     })
   } catch (error: any) {
-    return new Response(JSON.stringify({ error: error.message || 'Internal server error' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    })
+    console.error('[POST /api/chat] Error:', error)
+    return NextResponse.json(
+      {
+        error: error.message || 'Internal server error',
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      },
+      {
+        status: 500,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    )
   }
 }
-

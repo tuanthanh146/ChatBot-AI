@@ -85,6 +85,8 @@ export default function ChatPage() {
       // Add the new user message
       messages.push({ role: 'user' as const, content })
 
+      // Luôn gọi API route trên Vercel, API route sẽ gọi đến Ollama qua Cloudflare tunnel
+      // (Cấu hình OLLAMA_BASE_URL trên Vercel để trỏ đến Cloudflare tunnel URL)
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
@@ -97,8 +99,21 @@ export default function ChatPage() {
       })
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }))
-        throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`)
+        // Đọc error message từ response
+        let errorMessage = `HTTP ${response.status}: ${response.statusText}`
+        try {
+          const errorData = await response.json()
+          errorMessage = errorData.error || errorMessage
+        } catch (e) {
+          // Nếu không parse được JSON, đọc text
+          try {
+            const errorText = await response.text()
+            errorMessage = errorText || errorMessage
+          } catch (e2) {
+            // Giữ nguyên errorMessage mặc định
+          }
+        }
+        throw new Error(errorMessage)
       }
 
       const reader = response.body?.getReader()
