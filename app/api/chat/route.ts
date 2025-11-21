@@ -5,9 +5,17 @@ import type { ChatMessage } from '@/lib/metrics'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+export const maxDuration = 300 // 5 minutes for Vercel
+
+// CORS headers helper
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+}
 
 // ✅ FIX 405: Vercel dùng GET để kiểm tra API route
-export function GET() {
+export async function GET() {
   console.log('[GET /api/chat] Health check')
   return NextResponse.json(
     { 
@@ -17,22 +25,18 @@ export function GET() {
     },
     { 
       status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-      }
+      headers: corsHeaders
     }
   )
 }
 
 // ✅ FIX 405: CORS preflight
-export function OPTIONS() {
+export async function OPTIONS() {
   console.log('[OPTIONS /api/chat] CORS preflight')
-  return new Response(null, {
+  return new NextResponse(null, {
     status: 204,
     headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      ...corsHeaders,
       'Access-Control-Max-Age': '86400',
     },
   })
